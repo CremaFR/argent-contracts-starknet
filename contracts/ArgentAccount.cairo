@@ -147,7 +147,11 @@ func _guardian() -> (res: felt):
 end
 
 @storage_var
-func _plugin() -> (res: felt):
+func _plugins(index: felt) -> (res: felt):
+end
+
+@storage_var
+func _plugins_index() -> (res: felt):
 end
 
 @storage_var
@@ -205,9 +209,11 @@ func __execute__{
     ):
     alloc_locals
 
-    let (response_plugin) = execute_plugins(call_array_len, call_array, calldata_len, calldata)
+    let (plugin_index) = _plugins_index.read()
+    let (response_plugin, index) = execute_plugins(call_array_len, call_array, calldata_len, calldata, plugin_index)
     if response_plugin == FAIL:
-        with_attr error_message("Plugin X fail"):
+        # {index} does not work Error message: Plugin {index} fail (Cannot evaluate ap-based or complex references: ['index']
+        with_attr error_message("Plugin index fail"):
             assert FAIL = OK 
         end
     end
@@ -501,7 +507,9 @@ func set_plugin{
         pedersen_ptr : HashBuiltin*,
         range_check_ptr
     }(new_plugin: felt) -> ():
-    _plugin.write(new_plugin)
+    let (index) = _plugins_index.read()
+    _plugins.write(index + 1,new_plugin)
+    _plugins_index.write(index + 1)
     return ()
 end
 
@@ -767,17 +775,19 @@ func execute_plugins{
         call_array_len: felt,
         call_array: CallArray*,
         calldata_len: felt,
-        calldata: felt*
+        calldata: felt*,
+        plugin_index: felt
     ) -> (
         response: felt,
+        index: felt,
     ):
     alloc_locals
 
-    let (plugin_address) = _plugin.read()
-
-    if plugin_address == 0:
-        return (OK)
+    if plugin_index == 0:
+        return (OK, 0)
     end
+    
+    let (plugin_address) = _plugins.read(plugin_index)
 
     let (res) = IPlugin.probe(
         contract_address=plugin_address,
@@ -788,7 +798,11 @@ func execute_plugins{
         plugin_offset=0,
         plugin_total=0
     )
-    return (response=res)
+    if res == OK:
+        let (res, index) = execute_plugins(call_array_len, call_array, calldata_len, calldata, plugin_index - 1)
+        return (response=res, index=index)
+    end
+    return (response=res, index=plugin_index)
 end
 
 func from_call_array_to_call{

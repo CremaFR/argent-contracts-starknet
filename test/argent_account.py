@@ -526,7 +526,7 @@ async def test_call_dapp_no_guardian_with_plugin(get_starknet, dapp_factory):
     dapp = dapp_factory
     sender = TransactionSender(account_no_guardian)
 
-    plugin = await deploy(starknet, "contracts/Plugin.cairo")
+    plugin = await deploy(starknet, "contracts/RestrictedList.cairo")
     account_no_guardian.set_plugin(plugin.contract_address)
 
     # should call the dapp
@@ -543,7 +543,7 @@ async def test_call_dapp_no_guardian_with_plugin_should_revert(get_starknet, dap
     dapp = dapp_factory
     sender = TransactionSender(account_no_guardian)
 
-    plugin = await deploy(starknet, "contracts/Plugin.cairo")
+    plugin = await deploy(starknet, "contracts/RestrictedList.cairo")
     await account_no_guardian.set_plugin(plugin.contract_address).invoke()
 
     await plugin.add_restricted_address(dapp.contract_address).invoke()
@@ -552,5 +552,37 @@ async def test_call_dapp_no_guardian_with_plugin_should_revert(get_starknet, dap
     # should call the dapp
     await assert_revert(
        sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer]),
-       "Plugin X fail"
+       "Plugin index fail"
+    )
+
+@pytest.mark.asyncio
+async def test_call_dapp_no_guardian_with_plugins(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    plugin = await deploy(starknet, "contracts/RestrictedList.cairo")
+    plugin2 = await deploy(starknet, "contracts/RestrictedList.cairo")
+    plugin3 = await deploy(starknet, "contracts/RestrictedList.cairo")
+    plugin4 = await deploy(starknet, "contracts/RestrictedList.cairo")
+    await account_no_guardian.set_plugin(plugin2.contract_address).invoke()
+    await account_no_guardian.set_plugin(plugin3.contract_address).invoke()
+    await account_no_guardian.set_plugin(plugin4.contract_address).invoke()
+
+    await plugin.add_restricted_address(dapp.contract_address).invoke()
+    #await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
+
+     # should call the dapp
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
+    await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 47
+
+    await account_no_guardian.set_plugin(plugin.contract_address).invoke()
+
+    # should call the dapp
+    await assert_revert(
+       sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer]),
+       "Plugin index fail"
     )
