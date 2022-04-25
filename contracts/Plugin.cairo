@@ -5,14 +5,12 @@ from starkware.cairo.common.math import (assert_not_equal, assert_not_zero)
 from starkware.starknet.common.syscalls import (get_caller_address)
 from starkware.cairo.common.alloc import alloc
 
-#from contracts.ArgentAccount import (from_call_array_to_call)
-
 const TRUE = 1
 const FALSE = 0
 
 const RETRY = 2
-const OK = 1
-const FAIL = 0
+const FAIL = 1
+const OK = 0
 
 struct Call:
     member to: felt
@@ -194,9 +192,9 @@ func probe{
     # do the current call
     let this_call: Call = [calls]
 
-    let (is_call_authorized) = is_address_restricted(this_call.to)
+    let (is_call_restricted) = is_address_restricted(this_call.to)
 
-    if is_call_authorized == 0:
+    if is_call_restricted == 1:
         return (response_status=FAIL)
     else:
         let (response) = probe(call_array_len - 1, call_array + Call.SIZE, calldata_len, calldata, plugin_offset, plugin_total)
