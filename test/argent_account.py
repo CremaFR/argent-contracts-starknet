@@ -517,3 +517,40 @@ async def test_is_valid_signature(account_factory):
         signatures += list(sig.sign(hash))
     
     await account.is_valid_signature(hash, signatures).call()
+
+@pytest.mark.asyncio
+async def test_call_dapp_no_guardian_with_plugin(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    plugin = await deploy(starknet, "contracts/Plugin.cairo")
+    account_no_guardian.set_plugin(plugin.contract_address)
+
+    # should call the dapp
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
+    await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 47
+
+
+@pytest.mark.asyncio
+async def test_call_dapp_no_guardian_with_plugin_should_revert(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    plugin = await deploy(starknet, "contracts/Plugin.cairo")
+    await account_no_guardian.set_plugin(plugin.contract_address).invoke()
+
+    await plugin.add_restricted_address(dapp.contract_address).invoke()
+    #await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
+
+    # should call the dapp
+    await assert_revert(
+       sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer]),
+       "Plugin X fail"
+    )

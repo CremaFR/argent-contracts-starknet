@@ -217,7 +217,7 @@ func is_admin{
     let (current_admin) = get_admin()
 
     with_attr error_message("You're not allowed to call this function"):
-        assert_not_equal(caller_address, current_admin)
+        assert caller_address = current_admin
     end
 
     return (TRUE)

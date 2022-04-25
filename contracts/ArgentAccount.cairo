@@ -7,7 +7,7 @@ from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 from starkware.cairo.common.math import assert_not_zero, assert_le, assert_nn
 from starkware.starknet.common.syscalls import (
-    call_contract, get_tx_info, get_contract_address, get_caller_address, get_block_timestamp
+    call_contract, CallContractRequest, CALL_CONTRACT_SELECTOR, CallContract, get_tx_info, get_contract_address, get_caller_address, get_block_timestamp
 )
 from starkware.cairo.common.hash_state import (
     hash_init, hash_finalize, hash_update, hash_update_single
@@ -18,6 +18,18 @@ from contracts.Upgradable import _set_implementation
 @contract_interface
 namespace IAccount:
     func supportsInterface(interfaceId: felt) -> (success : felt):
+    end
+end
+
+@contract_interface
+namespace IPlugin:
+    func probe( 
+        call_array_len: felt,
+        call_array: CallArray*,
+        calldata_len: felt,
+        calldata: felt*,
+        plugin_offset: felt,
+        plugin_total: felt) -> (res : felt):
     end
 end
 
@@ -44,6 +56,10 @@ const ERC165_ACCOUNT_INTERFACE = 0xf10dbd44
 
 const TRUE = 1
 const FALSE = 0
+
+const RETRY = 2
+const FAIL = 1
+const OK = 0
 
 ####################
 # STRUCTS
@@ -131,6 +147,10 @@ func _guardian() -> (res: felt):
 end
 
 @storage_var
+func _plugin() -> (res: felt):
+end
+
+@storage_var
 func _guardian_backup() -> (res: felt):
 end
 
@@ -185,6 +205,13 @@ func __execute__{
     ):
     alloc_locals
 
+    let (response_plugin) = execute_plugins(call_array_len, call_array, calldata_len, calldata)
+    if response_plugin == FAIL:
+        with_attr error_message("Plugin X fail"):
+            assert FAIL = OK 
+        end
+    end
+    
     ############### TMP #############################
     # parse inputs to an array of 'Call' struct
     let (calls : Call*) = alloc()
@@ -468,6 +495,17 @@ func escape_signer{
     return()
 end
 
+@external
+func set_plugin{
+        syscall_ptr : felt*,
+        pedersen_ptr : HashBuiltin*,
+        range_check_ptr
+    }(new_plugin: felt) -> ():
+    _plugin.write(new_plugin)
+    return ()
+end
+
+
 ####################
 # VIEW FUNCTIONS
 ####################
@@ -719,6 +757,38 @@ func execute_list{
     # do the next calls recursively
     let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res.retdata_size)
     return (response_len + res.retdata_size)
+end
+
+func execute_plugins{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    } (
+        call_array_len: felt,
+        call_array: CallArray*,
+        calldata_len: felt,
+        calldata: felt*
+    ) -> (
+        response: felt,
+    ):
+    alloc_locals
+
+    let (plugin_address) = _plugin.read()
+
+    if plugin_address == 0:
+        return (OK)
+    end
+
+    let (res) = IPlugin.probe(
+        contract_address=plugin_address,
+        call_array_len=call_array_len,
+        call_array=call_array,
+        calldata_len=calldata_len,
+        calldata=calldata,
+        plugin_offset=0,
+        plugin_total=0
+    )
+    return (response=res)
 end
 
 func from_call_array_to_call{
