@@ -527,7 +527,7 @@ async def test_call_dapp_no_guardian_with_plugin(get_starknet, dapp_factory):
     sender = TransactionSender(account_no_guardian)
 
     plugin = await deploy(starknet, "contracts/RestrictedList.cairo")
-    account_no_guardian.set_plugin(plugin.contract_address)
+    await account_no_guardian.set_plugin(plugin.contract_address).invoke()
 
     # should call the dapp
     assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
@@ -572,13 +572,13 @@ async def test_call_dapp_no_guardian_with_plugins(get_starknet, dapp_factory):
     await account_no_guardian.set_plugin(plugin4.contract_address).invoke()
 
     await plugin.add_restricted_address(dapp.contract_address).invoke()
-    #await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
 
      # should call the dapp
     assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
     await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer])
     assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 47
 
+    # add restricted address
     await account_no_guardian.set_plugin(plugin.contract_address).invoke()
 
     # should call the dapp
@@ -586,3 +586,30 @@ async def test_call_dapp_no_guardian_with_plugins(get_starknet, dapp_factory):
        sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [signer]),
        "Plugin index fail"
     )
+
+
+
+@pytest.mark.asyncio
+async def test_call_dapp_no_guardian_session_key(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    session_key = await deploy(starknet, "contracts/SessionKey.cairo")
+    await account_no_guardian.set_plugin(session_key.contract_address).invoke()
+
+    await session_key.add_session_key(wrong_signer.public_key, 60 * 60 * 2).invoke()
+
+    # should call the dapp
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
+    await sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [wrong_signer])
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 47
+
+    await session_key.remove_session_key(wrong_signer.public_key).invoke()
+
+    # should call the dapp
+    # await assert_revert(
+    #    sender.send_transaction([(dapp.contract_address, 'set_number', [47])], [wrong_signer])
+    # )

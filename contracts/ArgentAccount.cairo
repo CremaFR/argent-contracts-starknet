@@ -57,6 +57,7 @@ const ERC165_ACCOUNT_INTERFACE = 0xf10dbd44
 const TRUE = 1
 const FALSE = 0
 
+const EXECUTE = 3
 const RETRY = 2
 const FAIL = 1
 const OK = 0
@@ -251,9 +252,14 @@ func __execute__{
         assert_no_self_call(tx_info.account_contract_address, calls_len, calls)
     end
     # validate signer and guardian signatures
-    validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
-    validate_guardian_signature(tx_info.transaction_hash, tx_info.signature + 2, tx_info.signature_len - 2)
 
+    if response_plugin == EXECUTE:               
+        # validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
+        validate_guardian_signature(tx_info.transaction_hash, tx_info.signature + 2, tx_info.signature_len - 2)
+    else:
+        validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
+        validate_guardian_signature(tx_info.transaction_hash, tx_info.signature + 2, tx_info.signature_len - 2)
+    end
     # execute calls
     do_execute:
     local ecdsa_ptr: SignatureBuiltin* = ecdsa_ptr
@@ -801,6 +807,9 @@ func execute_plugins{
     if res == OK:
         let (res, index) = execute_plugins(call_array_len, call_array, calldata_len, calldata, plugin_index - 1)
         return (response=res, index=index)
+    end
+    if res == EXECUTE:
+        return (response=res, index=plugin_index)
     end
     return (response=res, index=plugin_index)
 end
