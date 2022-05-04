@@ -11,6 +11,10 @@ from starkware.starknet.common.syscalls import get_caller_address
 func stored_number(user : felt) -> (res: felt):
 end
 
+@storage_var
+func stored_number2() -> (res: felt):
+end
+
 ####################
 # EXTERNAL FUNCTIONS
 ####################
@@ -25,6 +29,19 @@ func set_number{
     ):
     let (user) = get_caller_address()
     stored_number.write(user, number)
+    return ()
+end
+
+
+@external
+func set_number2{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    }(
+        number: felt
+    ):
+    stored_number2.write(number)
     return ()
 end
 
@@ -55,5 +72,15 @@ func get_number{
         user: felt
     ) -> (number: felt):
     let (number) = stored_number.read(user)
+    return (number=number)
+end
+
+@view
+func get_number2{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    }() -> (number: felt):
+    let (number) = stored_number2.read()
     return (number=number)
 end

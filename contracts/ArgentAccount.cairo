@@ -7,7 +7,7 @@ from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 from starkware.cairo.common.math import assert_not_zero, assert_le, assert_nn
 from starkware.starknet.common.syscalls import (
-    call_contract, get_tx_info, get_contract_address, get_caller_address, get_block_timestamp
+    call_contract, delegate_call, get_tx_info, get_contract_address, get_caller_address, get_block_timestamp
 )
 from starkware.cairo.common.hash_state import (
     hash_init, hash_finalize, hash_update, hash_update_single
@@ -45,6 +45,8 @@ const ERC165_ACCOUNT_INTERFACE = 0xf10dbd44
 const TRUE = 1
 const FALSE = 0
 
+const DELEGATE_CALL = 1
+
 ####################
 # STRUCTS
 ####################
@@ -54,6 +56,7 @@ struct Call:
     member selector: felt
     member calldata_len: felt
     member calldata: felt*
+    member delegate: felt 
 end
 
 # Tmp struct introduced while we wait for Cairo
@@ -63,6 +66,7 @@ struct CallArray:
     member selector: felt
     member data_offset: felt
     member data_len: felt
+    member delegate: felt
 end
 
 struct Escape:
@@ -708,17 +712,29 @@ func execute_list{
     
     # do the current call
     let this_call: Call = [calls]
-    let res = call_contract(
-        contract_address=this_call.to,
-        function_selector=this_call.selector,
-        calldata_size=this_call.calldata_len,
-        calldata=this_call.calldata
-    )
-    # copy the result in response
-    memcpy(reponse, res.retdata, res.retdata_size)
-    # do the next calls recursively
-    let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res.retdata_size)
-    return (response_len + res.retdata_size)
+    if this_call.delegate == DELEGATE_CALL:
+        let res = delegate_call(
+            contract_address=this_call.to,
+            function_selector=this_call.selector,
+            calldata_size=this_call.calldata_len,
+            calldata=this_call.calldata
+        )
+        memcpy(reponse, res.retdata, res.retdata_size)
+        # do the next calls recursively
+        let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res.retdata_size)
+        return (response_len + res.retdata_size)
+    else:
+        let res2 = call_contract(
+            contract_address=this_call.to,
+            function_selector=this_call.selector,
+            calldata_size=this_call.calldata_len,
+            calldata=this_call.calldata
+        )
+        memcpy(reponse, res2.retdata, res2.retdata_size)
+        # do the next calls recursively
+        let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res2.retdata_size)
+        return (response_len + res2.retdata_size)
+    end
 end
 
 func from_call_array_to_call{
@@ -739,7 +755,8 @@ func from_call_array_to_call{
             to=[call_array].to,
             selector=[call_array].selector,
             calldata_len=[call_array].data_len,
-            calldata=calldata + [call_array].data_offset
+            calldata=calldata + [call_array].data_offset,
+            delegate=[call_array].delegate 
         )
     
     # parse the remaining calls recursively

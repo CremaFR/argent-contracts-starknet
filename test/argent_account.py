@@ -26,6 +26,8 @@ IACCOUNT_ID = 0xf10dbd44
 ESCAPE_TYPE_GUARDIAN = 0
 ESCAPE_TYPE_SIGNER = 1
 
+DELEGATE_CALL = 1
+
 @pytest.fixture(scope='module')
 def event_loop():
     return asyncio.new_event_loop()
@@ -517,3 +519,31 @@ async def test_is_valid_signature(account_factory):
         signatures += list(sig.sign(hash))
     
     await account.is_valid_signature(hash, signatures).call()
+
+@pytest.mark.asyncio
+async def test_delegate_call_dapp_get_caller_address(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    # should call the dapp
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result[0] == 0
+    await sender.send_transaction([(dapp.contract_address, 'set_number', [47], DELEGATE_CALL)], [signer])
+    assert (await sender.call_transaction([(dapp.contract_address, 'get_number', [0], DELEGATE_CALL)], [signer])).result[0] == 47
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result.number == 0
+
+@pytest.mark.asyncio
+async def test_delegate_call_dapp_no_guardian_simple(get_starknet, dapp_factory):
+    starknet = get_starknet
+    account_no_guardian = await deploy(starknet, "contracts/ArgentAccount.cairo")
+    await account_no_guardian.initialize(signer.public_key, 0).invoke()
+    dapp = dapp_factory
+    sender = TransactionSender(account_no_guardian)
+
+    # should call the dapp
+    assert (await dapp.get_number(account_no_guardian.contract_address).call()).result[0] == 0
+    await sender.send_transaction([(dapp.contract_address, 'set_number2', [47], DELEGATE_CALL)], [signer])
+    assert (await sender.call_transaction([(dapp.contract_address, 'get_number2', [], DELEGATE_CALL)], [signer])).result[0] == 47
+    assert (await dapp.get_number2().call()).result.number == 0

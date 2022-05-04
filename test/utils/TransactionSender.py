@@ -29,15 +29,39 @@ class TransactionSender():
                 signatures += list(signer.sign(transaction_hash))
 
         return await self.account.__execute__(call_array, calldata, nonce).invoke(signature=signatures)
+    
+    async def call_transaction(self, calls, signers, nonce=None, max_fee=0):
+        if nonce is None:
+            execution_info = await self.account.get_nonce().call()
+            nonce = execution_info.result.nonce
+
+        call_array, calldata = from_call_to_call_array(calls)
+        transaction_hash = get_transaction_hash(self.account.contract_address, call_array, calldata, nonce, max_fee)
+
+        signatures = []
+        for signer in signers:
+            if signer == 0:
+                signatures += [0, 0]
+            else:    
+                signatures += list(signer.sign(transaction_hash))
+
+        return await self.account.__execute__(call_array, calldata, nonce).call(signature=signatures)
 
 def from_call_to_call_array(calls):
     call_array = []
     calldata = []
     for call in calls:
-        assert len(call) == 3, "Invalid call parameters"
-        entry = (call[0], get_selector_from_name(call[1]), len(calldata), len(call[2]))
-        call_array.append(entry)
-        calldata.extend(call[2])
+        #to manage default param of delegate = 0 to maintain comptabilities
+        if len(call) == 3:
+            entry = (call[0], get_selector_from_name(call[1]), len(calldata), len(call[2]), 0)
+            call_array.append(entry)
+            calldata.extend(call[2])
+        elif len(call) == 4:
+            entry = (call[0], get_selector_from_name(call[1]), len(calldata), len(call[2]), call[3])
+            call_array.append(entry)
+            calldata.extend(call[2])
+        else:
+            assert len(call) == 3, "Invalid call parameters"
     return call_array, calldata
 
 def get_transaction_hash(account, call_array, calldata, nonce, max_fee):
