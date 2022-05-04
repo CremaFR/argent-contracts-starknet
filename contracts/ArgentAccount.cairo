@@ -21,11 +21,25 @@ namespace IAccount:
     end
 end
 
+@contract_interface
+namespace IPlugin:
+    # Method to call during validation
+    func validate(
+        plugin_data_len: felt,
+        plugin_data: felt*,
+        call_array_len: felt,
+        call_array: CallArray*,
+        calldata_len: felt,
+        calldata: felt*
+    ):
+    end
+end
+
 ####################
 # CONSTANTS
 ####################
 
-const VERSION = '0.2.1'
+const VERSION = '0.2.2'
 
 const CHANGE_SIGNER_SELECTOR = 1540130945889430637313403138889853410180247761946478946165786566748520529557
 const CHANGE_GUARDIAN_SELECTOR = 1374386526556551464817815908276843861478960435557596145330240747921847320237
@@ -34,6 +48,7 @@ const TRIGGER_ESCAPE_SIGNER_SELECTOR = 65189126576298695489877423686052356045715
 const ESCAPE_GUARDIAN_SELECTOR = 1662889347576632967292303062205906116436469425870979472602094601074614456040
 const ESCAPE_SIGNER_SELECTOR = 578307412324655990419134484880427622068887477430675222732446709420063579565
 const CANCEL_ESCAPE_SELECTOR = 992575500541331354489361836180456905167517944319528538469723604173440834912
+const VALIDATE_WITH_PLUGIN_SELECTOR = 711707544683360748886552898736421357314279550279312425282792016031126102997
 
 const ESCAPE_SECURITY_PERIOD = 7*24*60*60 # set to e.g. 7 days in prod
 
@@ -138,6 +153,10 @@ end
 func _escape() -> (res: Escape):
 end
 
+@storage_var
+func _plugins(plugin: felt) -> (res: felt):
+end
+
 ####################
 # EXTERNAL FUNCTIONS
 ####################
@@ -185,6 +204,9 @@ func __execute__{
     ):
     alloc_locals
 
+    # validate and bump nonce
+    validate_and_bump_nonce(nonce)
+
     ############### TMP #############################
     # parse inputs to an array of 'Call' struct
     let (calls : Call*) = alloc()
@@ -192,14 +214,11 @@ func __execute__{
     let calls_len = call_array_len
     #################################################
 
-    # validate and bump nonce
-    validate_and_bump_nonce(nonce)
-
     # get the tx info
     let (tx_info) = get_tx_info()
 
-    if calls_len == 1:
-        if calls[0].to == tx_info.account_contract_address:
+    if calls[0].to == tx_info.account_contract_address:
+        if calls_len == 1:
             tempvar signer_condition = (calls[0].selector - ESCAPE_GUARDIAN_SELECTOR) * (calls[0].selector - TRIGGER_ESCAPE_GUARDIAN_SELECTOR)
             tempvar guardian_condition = (calls[0].selector - ESCAPE_SIGNER_SELECTOR) * (calls[0].selector - TRIGGER_ESCAPE_SIGNER_SELECTOR)
             if signer_condition == 0:
@@ -212,10 +231,15 @@ func __execute__{
                 validate_guardian_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
                 jmp do_execute
             end
+        else:
+            if calls[0].selector - VALIDATE_WITH_PLUGIN_SELECTOR == 0:
+                validate_with_plugin(call_array_len, call_array, calldata_len, calldata)
+                jmp do_execute
+            else:
+                # make sure no call is to the account
+                assert_no_self_call(tx_info.account_contract_address, calls_len, calls)
+            end
         end
-    else:
-        # make sure no call is to the account
-        assert_no_self_call(tx_info.account_contract_address, calls_len, calls)
     end
     # validate signer and guardian signatures
     validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
@@ -233,6 +257,57 @@ func __execute__{
     transaction_executed.emit(hash=tx_info.transaction_hash, response_len=response_len, response=response)
     return (retdata_size=response_len, retdata=response)
 end
+
+###### PLUGIN #######
+
+@external
+func add_plugin{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    } (
+        plugin: felt
+    ):
+    # only called via execute
+    assert_only_self()
+
+    # change signer
+    with_attr error_message("plugin cannot be null"):
+        assert_not_zero(plugin)
+    end
+    _plugins.write(plugin, 1)
+    return()
+end
+
+func validate_with_plugin{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        ecdsa_ptr: SignatureBuiltin*,
+        range_check_ptr
+    } (
+        call_array_len: felt,
+        call_array: CallArray*,
+        calldata_len: felt,
+        calldata: felt*
+    ):
+    alloc_locals
+
+    let plugin = calldata[call_array[0].data_offset]
+    let (is_plugin) = _plugins.read(plugin)
+    assert_not_zero(is_plugin)
+
+    IPlugin.delegate_validate(
+        contract_address=plugin,
+        plugin_data_len=call_array[0].data_len - 1,
+        plugin_data=calldata + call_array[0].data_offset + 1,
+        call_array_len=call_array_len - 1,
+        call_array=call_array + CallArray.SIZE,
+        calldata_len=calldata_len - call_array[0].data_len,
+        calldata=calldata + call_array[0].data_offset + call_array[0].data_len)
+    return()
+end
+
+######################
 
 @external
 func upgrade{
