@@ -33,6 +33,14 @@ namespace IPlugin:
         calldata: felt*
     ):
     end
+
+    # Method to write data during Init (delegate call)
+    func write(
+        plugin_data_len: felt,
+        plugin_data: felt*,
+    ):
+    end
+
 end
 
 ####################
@@ -138,6 +146,10 @@ func _current_nonce() -> (res: felt):
 end
 
 @storage_var
+func _default_plugin() -> (res: felt):
+end
+
+@storage_var
 func _signer() -> (res: felt):
 end
 
@@ -167,21 +179,34 @@ func initialize{
         pedersen_ptr: HashBuiltin*,
         range_check_ptr
     } (
-        signer: felt,
-        guardian: felt
+        plugin: felt,
+        plugin_data_len: felt,
+        plugin_data: felt*
+
     ):
+    alloc_locals
+
     # check that we are not already initialized
-    let (current_signer) = _signer.read()
+    let (current_plugin) = _default_plugin.read()
     with_attr error_message("already initialized"):
-        assert current_signer = 0
+        assert current_plugin = 0
     end
     # check that the target signer is not zero
     with_attr error_message("signer cannot be null"):
-        assert_not_zero(signer)
+        assert_not_zero(plugin)
     end
+    
     # initialize the contract
-    _signer.write(signer)
-    _guardian.write(guardian)
+    IPlugin.delegate_write(
+        contract_address=plugin,
+        plugin_data_len=plugin_data_len,
+        plugin_data=plugin_data
+    )
+
+    # write twice the plugin in case someone wants to call the default plugin specifically ??
+    _plugins.write(plugin, 1)
+    _default_plugin.write(plugin)
+    
     return ()
 end
 
@@ -219,31 +244,13 @@ func __execute__{
 
     if calls[0].selector - USE_PLUGIN_SELECTOR == 0:
         # validate with plugin
-        validate_with_plugin(call_array_len, call_array, calldata_len, calldata)
+        let plugin = calldata[call_array[0].data_offset]
+        validate_with_plugin(plugin, call_array_len, call_array, calldata_len, calldata)
         jmp do_execute
     else:
-        if calls_len == 1:
-            if calls[0].to == tx_info.account_contract_address:
-                tempvar signer_condition = (calls[0].selector - ESCAPE_GUARDIAN_SELECTOR) * (calls[0].selector - TRIGGER_ESCAPE_GUARDIAN_SELECTOR)
-                tempvar guardian_condition = (calls[0].selector - ESCAPE_SIGNER_SELECTOR) * (calls[0].selector - TRIGGER_ESCAPE_SIGNER_SELECTOR)
-                if signer_condition == 0:
-                    # validate signer signature
-                    validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
-                    jmp do_execute
-                end
-                if guardian_condition == 0:
-                    # validate guardian signature
-                    validate_guardian_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
-                    jmp do_execute
-                end
-            end
-        else:
-            # make sure no call is to the account
-            assert_no_self_call(tx_info.account_contract_address, calls_len, calls)
-        end
-        # validate signer and guardian signatures
-        validate_signer_signature(tx_info.transaction_hash, tx_info.signature, tx_info.signature_len)
-        validate_guardian_signature(tx_info.transaction_hash, tx_info.signature + 2, tx_info.signature_len - 2)
+        let (plugin) = _default_plugin.read()
+        validate_with_plugin(plugin, call_array_len, call_array, calldata_len, calldata)
+        jmp do_execute
     end
 
     # execute calls
@@ -304,6 +311,7 @@ func validate_with_plugin{
         ecdsa_ptr: SignatureBuiltin*,
         range_check_ptr
     } (
+        plugin: felt,
         call_array_len: felt,
         call_array: CallArray*,
         calldata_len: felt,
@@ -311,7 +319,6 @@ func validate_with_plugin{
     ):
     alloc_locals
 
-    let plugin = calldata[call_array[0].data_offset]
     let (is_plugin) = _plugins.read(plugin)
     assert_not_zero(is_plugin)
 
