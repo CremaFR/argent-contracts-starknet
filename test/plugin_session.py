@@ -7,10 +7,12 @@ from utils.Signer import Signer
 from utils.utilities import deploy, assert_revert, str_to_felt, assert_event_emmited
 from utils.TransactionSender import TransactionSender
 from starkware.cairo.common.hash_state import compute_hash_on_elements
+from starkware.starknet.compiler.compile import get_selector_from_name
 
 LOGGER = logging.getLogger(__name__)
 
 signer = Signer(123456789987654321)
+wrong_signer = Signer(666666666666666666)
 
 session_key = Signer(666666666666666666)
 wrong_session_key = Signer(6767676767)
@@ -70,6 +72,12 @@ async def plugin_factory2(get_starknet):
     plugin_session = await deploy(starknet, "contracts/DefaultSigner.cairo")
     return plugin_session
 
+@pytest.fixture
+async def plugin_factory3(get_starknet):
+    starknet = get_starknet
+    plugin_session = await deploy(starknet, "contracts/SignerLimited.cairo")
+    return plugin_session
+
 @pytest.mark.asyncio
 async def test_add_plugin(account_factory, plugin_factory):
     account = account_factory
@@ -119,7 +127,10 @@ async def test_default_plugin(account_factory2, plugin_factory, plugin_factory2,
 
     #tx_exec_info = await sender.send_transaction([(account.contract_address, 'initialize', [plugin.contract_address, signer.public_key])], [signer])
     await account.initialize(SignerPlugin.contract_address, [signer.public_key]).invoke()
-    
+    tx_exec_info = await sender.send_transaction([(account.contract_address, 'add_plugin', [plugin.contract_address])], [signer])
+    session_token = get_session_token(session_key.public_key, DEFAULT_TIMESTAMP + 10)
+    update_starknet_block(starknet=starknet, block_timestamp=(DEFAULT_TIMESTAMP))
+   
     # should throw when calling initialize with another plugin
     await assert_revert(
         account.initialize(plugin.contract_address, [signer.public_key]).invoke(),
@@ -158,10 +169,7 @@ async def test_default_plugin(account_factory2, plugin_factory, plugin_factory2,
 
     assert (await dapp.get_number(account.contract_address).call()).result.number == 69
 
-    tx_exec_info = await sender.send_transaction([(account.contract_address, 'add_plugin', [plugin.contract_address])], [signer])
-    session_token = get_session_token(session_key.public_key, DEFAULT_TIMESTAMP + 10)
-    update_starknet_block(starknet=starknet, block_timestamp=(DEFAULT_TIMESTAMP))
-    
+ 
     # Use a session key plugin
     tx_exec_info = await sender.send_transaction(
         [
@@ -178,6 +186,66 @@ async def test_default_plugin(account_factory2, plugin_factory, plugin_factory2,
 
     assert (await dapp.get_number(account.contract_address).call()).result.number == 420
 
+@pytest.mark.asyncio
+async def test_limited_plugin(account_factory2, plugin_factory2, plugin_factory3, dapp_factory, get_starknet):
+    account = account_factory2
+    SignerPlugin = plugin_factory2
+    SignerLimitedPlugin = plugin_factory3
+    dapp = dapp_factory
+    starknet = get_starknet
+    sender = TransactionSender(account)
+
+    #tx_exec_info = await sender.send_transaction([(account.contract_address, 'initialize', [plugin.contract_address, signer.public_key])], [signer])
+    await account.initialize(SignerLimitedPlugin.contract_address, [signer.public_key]).invoke()
+    tx_exec_info = await sender.send_transaction([(account.contract_address, 'add_plugin', [SignerPlugin.contract_address])], [signer])
+    assert (await dapp.get_number(account.contract_address).call()).result.number == 0
+    
+    # Use default Plugin should revert forbid operation
+    await assert_revert(
+        sender.send_transaction(
+            [
+                (account.contract_address, 'use_plugin', [SignerLimitedPlugin.contract_address]),
+                (dapp.contract_address, 'set_number', [69])
+            ],                 
+            [signer]
+        )
+    )
+
+    # Use default Plugin should revert forbid operation
+    await assert_revert(
+        sender.send_transaction(
+            [
+                (dapp.contract_address, 'set_number', [69])
+            ],                 
+            [signer]
+        )
+    )
+
+    #assert (await dapp.get_number(account.contract_address).call()).result.number == 69
+
+    # Use default Plugin by calling it explicitly
+    tx_exec_info = await sender.send_transaction(
+        [
+            (account.contract_address, 'use_plugin', [SignerPlugin.contract_address]),
+            (dapp.contract_address, 'set_number', [47])
+        ], 
+        [signer])
+
+    assert_event_emmited(
+        tx_exec_info,
+        from_address=account.contract_address,
+        name='transaction_executed'
+    )
+
+    assert (await dapp.get_number(account.contract_address).call()).result.number == 47
+
+    
+@pytest.mark.asyncio
+async def test_selector(get_starknet):
+    starknet = get_starknet
+    selector = get_selector_from_name('set_number')
+
+    LOGGER.info(selector)
 
 def get_session_token(key, expires):
     session = [

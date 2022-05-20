@@ -249,7 +249,7 @@ func __execute__{
         jmp do_execute
     else:
         let (plugin) = _default_plugin.read()
-        validate_with_plugin(plugin, call_array_len, call_array, calldata_len, calldata)
+        validate_with_default_plugin(plugin, call_array_len, call_array, calldata_len, calldata)
         jmp do_execute
     end
 
@@ -330,6 +330,34 @@ func validate_with_plugin{
         call_array=call_array + CallArray.SIZE,
         calldata_len=calldata_len - call_array[0].data_len,
         calldata=calldata + call_array[0].data_offset + call_array[0].data_len)
+    return()
+end
+
+func validate_with_default_plugin{
+        syscall_ptr: felt*,
+        pedersen_ptr: HashBuiltin*,
+        ecdsa_ptr: SignatureBuiltin*,
+        range_check_ptr
+    } (
+        plugin: felt,
+        call_array_len: felt,
+        call_array: CallArray*,
+        calldata_len: felt,
+        calldata: felt*
+    ):
+    alloc_locals
+
+    let (is_plugin) = _plugins.read(plugin)
+    assert_not_zero(is_plugin)
+
+    IPlugin.delegate_validate(
+        contract_address=plugin,
+        plugin_data_len=call_array[0].data_len - 1,
+        plugin_data=calldata + call_array[0].data_offset + 1,
+        call_array_len=call_array_len,
+        call_array=call_array,
+        calldata_len=calldata_len,
+        calldata=calldata)
     return()
 end
 
