@@ -7,7 +7,7 @@ from starkware.cairo.common.alloc import alloc
 from starkware.cairo.common.memcpy import memcpy
 from starkware.cairo.common.math import assert_not_zero, assert_le, assert_nn
 from starkware.starknet.common.syscalls import (
-    call_contract, get_tx_info, get_contract_address, get_caller_address, get_block_timestamp
+    call_contract, get_tx_info, delegate_call, get_contract_address, get_caller_address, get_block_timestamp
 )
 from starkware.cairo.common.hash_state import (
     hash_init, hash_finalize, hash_update, hash_update_single
@@ -57,6 +57,7 @@ const ESCAPE_GUARDIAN_SELECTOR = 16628893475766329672923030622059061164364694258
 const ESCAPE_SIGNER_SELECTOR = 578307412324655990419134484880427622068887477430675222732446709420063579565
 const CANCEL_ESCAPE_SELECTOR = 992575500541331354489361836180456905167517944319528538469723604173440834912
 const USE_PLUGIN_SELECTOR = 1121675007639292412441492001821602921366030142137563176027248191276862353634
+const USE_PLUGIN_UPDATE_SELECTOR = 1450767156438606126731669319388422627287833153702538593859922833278978281744
 
 const ESCAPE_SECURITY_PERIOD = 7*24*60*60 # set to e.g. 7 days in prod
 
@@ -98,38 +99,6 @@ end
 ####################
 
 @event
-func signer_changed(new_signer: felt):
-end
-
-@event
-func guardian_changed(new_guardian: felt):
-end
-
-@event
-func guardian_backup_changed(new_guardian: felt):
-end
-
-@event
-func escape_guardian_triggered(active_at: felt):
-end
-
-@event
-func escape_signer_triggered(active_at: felt):
-end
-
-@event
-func escape_canceled():
-end
-
-@event
-func guardian_escaped(new_guardian: felt):
-end
-
-@event
-func signer_escaped(new_signer: felt):
-end
-
-@event
 func account_upgraded(new_implementation: felt):
 end
 
@@ -150,7 +119,7 @@ func _default_plugin() -> (res: felt):
 end
 
 @storage_var
-func _signer() -> (res: felt):
+func _plugins(plugin: felt) -> (res: felt):
 end
 
 @storage_var
@@ -158,20 +127,33 @@ func _guardian() -> (res: felt):
 end
 
 @storage_var
-func _guardian_backup() -> (res: felt):
+func _signer() -> (res: felt):
 end
 
-@storage_var
-func _escape() -> (res: Escape):
-end
-
-@storage_var
-func _plugins(plugin: felt) -> (res: felt):
-end
 
 ####################
 # EXTERNAL FUNCTIONS
 ####################
+
+@view
+func get_guardian{
+        syscall_ptr: felt*, 
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    } () -> (guardian: felt):
+    let (res) = _guardian.read()
+    return (guardian=res)
+end
+
+@view
+func get_signer{
+        syscall_ptr: felt*, 
+        pedersen_ptr: HashBuiltin*,
+        range_check_ptr
+    } () -> (signer: felt):
+    let (res) = _signer.read()
+    return (signer=res)
+end
 
 @external
 func initialize{
@@ -261,15 +243,23 @@ func __execute__{
     local pedersen_ptr: HashBuiltin* = pedersen_ptr
     let (response : felt*) = alloc()
     local response_len
+    let (plugin_address) = _default_plugin.read()
+     if calls[0].selector - USE_PLUGIN_UPDATE_SELECTOR + (calls[0].to - plugin_address) == 0:
+        # could call execute_delegate_default_plugin 
+        let (res) = execute_delegate_default_plugin(calls_len, calls, response)
+        assert response_len = res
+        jmp exit
+    end
     if calls[0].selector - USE_PLUGIN_SELECTOR == 0:
         # could call execute_with_plugin 
         let (res) = execute_list(calls_len - 1, calls + Call.SIZE, response)
         assert response_len = res
-    else:
-        let (res) = execute_list(calls_len, calls, response)
-        assert response_len = res
+        jmp exit
     end
+    let (res) = execute_list(calls_len, calls, response)
+    assert response_len = res
     # emit event
+    exit:
     transaction_executed.emit(hash=tx_info.transaction_hash, response_len=response_len, response=response)
     return (retdata_size=response_len, retdata=response)
 end
@@ -384,239 +374,6 @@ func upgrade{
     return()
 end
 
-@external
-func change_signer{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } (
-        new_signer: felt
-    ):
-    # only called via execute
-    assert_only_self()
-
-    # change signer
-    with_attr error_message("signer cannot be null"):
-        assert_not_zero(new_signer)
-    end
-    _signer.write(new_signer)
-    signer_changed.emit(new_signer=new_signer)
-    return()
-end
-
-@external
-func change_guardian{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } (
-        new_guardian: felt
-    ):
-    # only called via execute
-    assert_only_self()
-    
-    # assert !(guardian_backup != 0 && new_guardian == 0)
-    if new_guardian == 0:
-        let (guardian_backup) = _guardian_backup.read()
-        with_attr error_message("new guardian cannot be null"):
-            assert guardian_backup = 0
-        end
-        tempvar syscall_ptr: felt* = syscall_ptr
-        tempvar range_check_ptr = range_check_ptr
-        tempvar pedersen_ptr: HashBuiltin* = pedersen_ptr
-    else:
-        tempvar syscall_ptr: felt* = syscall_ptr
-        tempvar range_check_ptr = range_check_ptr
-        tempvar pedersen_ptr: HashBuiltin* = pedersen_ptr
-    end
-
-    # change guardian
-    _guardian.write(new_guardian)
-    guardian_changed.emit(new_guardian=new_guardian)
-    return()
-end
-
-@external
-func change_guardian_backup{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } (
-        new_guardian: felt
-    ):
-    # only called via execute
-    assert_only_self()
-
-    # no backup when there is no guardian set
-    assert_guardian_set()
-
-    # change guardian
-    _guardian_backup.write(new_guardian)
-    guardian_backup_changed.emit(new_guardian=new_guardian)
-    return()
-end
-
-@external
-func trigger_escape_guardian{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } ():
-    # only called via execute
-    assert_only_self()
-
-    # no escape when the guardian is not set
-    assert_guardian_set()
-
-    # store new escape
-    let (block_timestamp) = get_block_timestamp()
-    let new_escape: Escape = Escape(block_timestamp + ESCAPE_SECURITY_PERIOD, ESCAPE_TYPE_GUARDIAN)
-    _escape.write(new_escape)
-    escape_guardian_triggered.emit(active_at=block_timestamp + ESCAPE_SECURITY_PERIOD)
-    return()
-end
-
-@external
-func trigger_escape_signer{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } ():
-    # only called via execute
-    assert_only_self()
-    
-    # no escape when there is no guardian set
-    assert_guardian_set()
-
-    # no escape if there is an guardian escape triggered by the signer in progress
-    let (current_escape) = _escape.read()
-    with_attr error_message("cannot overrride signer escape"):
-        assert current_escape.active_at * (current_escape.type - ESCAPE_TYPE_SIGNER) = 0
-    end
-
-    # store new escape
-    let (block_timestamp) = get_block_timestamp()
-    let new_escape: Escape = Escape(block_timestamp + ESCAPE_SECURITY_PERIOD, ESCAPE_TYPE_SIGNER)
-    _escape.write(new_escape)
-    escape_signer_triggered.emit(active_at=block_timestamp + ESCAPE_SECURITY_PERIOD)
-    return()
-end
-
-@external
-func cancel_escape{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } ():
-
-    # only called via execute
-    assert_only_self()
-
-    # validate there is an active escape
-    let (current_escape) = _escape.read()
-    with_attr error_message("no escape to cancel"):
-        assert_not_zero(current_escape.active_at)
-    end
-
-    # clear escape
-    let new_escape: Escape = Escape(0, 0)
-    _escape.write(new_escape)
-    escape_canceled.emit()
-    return()
-end
-
-@external
-func escape_guardian{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } (
-        new_guardian: felt
-    ):
-    alloc_locals
-
-    # only called via execute
-    assert_only_self()
-    # no escape when the guardian is not set
-    assert_guardian_set()
-    
-    let (current_escape) = _escape.read()
-    let (block_timestamp) = get_block_timestamp()
-    with_attr error_message("escape is not valid"):
-        # assert there is an active escape
-        assert_le(current_escape.active_at, block_timestamp)
-        # assert the escape was triggered by the signer
-        assert current_escape.type = ESCAPE_TYPE_GUARDIAN
-    end
-
-    # clear escape
-    let new_escape: Escape = Escape(0, 0)
-    _escape.write(new_escape)
-
-    # change guardian
-    assert_not_zero(new_guardian)
-    _guardian.write(new_guardian)
-    guardian_escaped.emit(new_guardian=new_guardian)
-
-    return()
-end
-
-@external
-func escape_signer{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } (
-        new_signer: felt
-    ):
-    alloc_locals
-
-    # only called via execute
-    assert_only_self()
-    # no escape when the guardian is not set
-    assert_guardian_set()
-
-    let (current_escape) = _escape.read()
-    let (block_timestamp) = get_block_timestamp()
-    with_attr error_message("escape is not valid"):
-        # validate there is an active escape
-        assert_le(current_escape.active_at, block_timestamp)
-        # assert the escape was triggered by the guardian
-        assert current_escape.type = ESCAPE_TYPE_SIGNER
-    end
-
-    # clear escape
-    let new_escape: Escape = Escape(0, 0)
-    _escape.write(new_escape)
-
-    # change signer
-    assert_not_zero(new_signer)
-    _signer.write(new_signer)
-    signer_escaped.emit(new_signer=new_signer)
-
-    return()
-end
-
-####################
-# VIEW FUNCTIONS
-####################
-
-@view
-func is_valid_signature{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        ecdsa_ptr: SignatureBuiltin*,
-        range_check_ptr
-    } (
-        hash: felt,
-        sig_len: felt,
-        sig: felt*
-    ) -> ():
-    validate_signer_signature(hash, sig, sig_len)
-    validate_guardian_signature(hash, sig + 2, sig_len - 2)
-    return ()
-end
-
 @view
 func supportsInterface{
         syscall_ptr: felt*, 
@@ -648,46 +405,6 @@ func get_nonce{
 end
 
 @view
-func get_signer{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } () -> (signer: felt):
-    let (res) = _signer.read()
-    return (signer=res)
-end
-
-@view
-func get_guardian{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } () -> (guardian: felt):
-    let (res) = _guardian.read()
-    return (guardian=res)
-end
-
-@view
-func get_guardian_backup{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } () -> (guardian_backup: felt):
-    let (res) = _guardian_backup.read()
-    return (guardian_backup=res)
-end
-
-@view
-func get_escape{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } () -> (active_at: felt, type: felt):
-    let (res) = _escape.read()
-    return (active_at=res.active_at, type=res.type)
-end
-
-@view
 func get_version() -> (version: felt):
     return (version=VERSION)
 end
@@ -707,31 +424,6 @@ func assert_only_self{
     return()
 end
 
-func assert_guardian_set{
-        syscall_ptr: felt*,
-        pedersen_ptr: HashBuiltin*,
-        range_check_ptr
-    } ():
-    let (guardian) = _guardian.read()
-    with_attr error_message("guardian must be set"):
-        assert_not_zero(guardian)
-    end
-    return()
-end
-
-func assert_no_self_call(
-        self: felt,
-        calls_len: felt,
-        calls: Call*
-    ):
-    if calls_len == 0:
-        return ()
-    end
-    assert_not_zero(calls[0].to - self)
-    assert_no_self_call(self, calls_len - 1, calls + Call.SIZE)
-    return()
-end
-
 func validate_and_bump_nonce{
         syscall_ptr: felt*, 
         pedersen_ptr: HashBuiltin*,
@@ -745,73 +437,6 @@ func validate_and_bump_nonce{
     end
     _current_nonce.write(current_nonce + 1)
     return()
-end
-
-func validate_signer_signature{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        ecdsa_ptr: SignatureBuiltin*,
-        range_check_ptr
-    } (
-        message: felt, 
-        signatures: felt*,
-        signatures_len: felt
-    ) -> ():
-    with_attr error_message("signer signature invalid"):
-        assert_nn(signatures_len - 2)
-        let (signer) = _signer.read()
-        verify_ecdsa_signature(
-            message=message,
-            public_key=signer,
-            signature_r=signatures[0],
-            signature_s=signatures[1])
-    end
-    return()
-end
-
-func validate_guardian_signature{
-        syscall_ptr: felt*, 
-        pedersen_ptr: HashBuiltin*,
-        ecdsa_ptr: SignatureBuiltin*,
-        range_check_ptr
-    } (
-        message: felt,
-        signatures: felt*,
-        signatures_len: felt
-    ) -> ():
-    alloc_locals
-    let (guardian) = _guardian.read()
-    if guardian == 0:
-        return()
-    else:
-        with_attr error_message("guardian signature invalid"):
-            if signatures_len == 2:
-                # must be signed by guardian
-                verify_ecdsa_signature(
-                    message=message,
-                    public_key=guardian,
-                    signature_r=signatures[0],
-                    signature_s=signatures[1])
-                tempvar syscall_ptr: felt* = syscall_ptr
-                tempvar range_check_ptr = range_check_ptr
-                tempvar pedersen_ptr: HashBuiltin* = pedersen_ptr
-            else:
-                # must be signed by guardian_backup
-                assert signatures_len = 4
-                assert (signatures[0] + signatures[1]) = 0
-                let (guardian_backup) = _guardian_backup.read()
-                verify_ecdsa_signature(
-                    message=message,
-                    public_key=guardian_backup,
-                    signature_r=signatures[2],
-                    signature_s=signatures[3])
-                tempvar syscall_ptr: felt* = syscall_ptr
-                tempvar range_check_ptr = range_check_ptr
-                tempvar pedersen_ptr: HashBuiltin* = pedersen_ptr
-            end
-        end
-        return()
-    end
 end
 
 # @notice Executes a list of contract calls recursively.
@@ -849,6 +474,39 @@ func execute_list{
     let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res.retdata_size)
     return (response_len + res.retdata_size)
 end
+
+# POC - todo rewrite for only call
+func execute_delegate_default_plugin{
+        syscall_ptr: felt*
+    } (
+        calls_len: felt,
+        calls: Call*,
+        reponse: felt*
+    ) -> (
+        response_len: felt,
+    ):
+    alloc_locals
+
+    # if no more calls
+    if calls_len == 0:
+       return (0)
+    end
+    
+    # do the current call
+    let this_call: Call = [calls]
+    let res = delegate_call(
+        contract_address=this_call.to,
+        function_selector=[this_call.calldata],
+        calldata_size=this_call.calldata_len -1,
+        calldata=this_call.calldata + 1
+    )
+    # copy the result in response
+    memcpy(reponse, res.retdata, res.retdata_size)
+    # do the next calls recursively
+    let (response_len) = execute_list(calls_len - 1, calls + Call.SIZE, reponse + res.retdata_size)
+    return (response_len + res.retdata_size)
+end
+
 
 func from_call_array_to_call{
         syscall_ptr: felt*
